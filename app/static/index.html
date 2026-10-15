@@ -33,7 +33,7 @@ tr{cursor:pointer}tbody tr:hover{background:#233344}tr.selected{background:#183d
 .transfer-dialog{width:min(520px,100%);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 20px 70px #0008}
 .transfer-dialog h2{font-size:18px;margin:0 0 8px}.transfer-meta{display:flex;justify-content:space-between;gap:12px;margin:12px 0;color:var(--muted);font-size:13px}
 .progress-track{height:14px;background:#0b1118;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-.progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease}.transfer-actions{display:flex;justify-content:flex-end;margin-top:14px}
+.progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease}.progress-fill.indeterminate{width:35%;animation:transfer-sweep 1.2s ease-in-out infinite alternate}@keyframes transfer-sweep{from{transform:translateX(0)}to{transform:translateX(185%)}}.transfer-actions{display:flex;justify-content:flex-end;margin-top:14px}
 @media(max-width:850px){.panes{grid-template-columns:1fr}.table-wrap{max-height:55vh}.connect{align-items:stretch}.field{flex:1}#host,#username,#password{width:100%}}
 </style>
 </head>
@@ -168,7 +168,7 @@ $('localRename').onclick=()=>rename('local');$('remoteRename').onclick=()=>renam
 $('localDelete').onclick=()=>del('local');$('remoteDelete').onclick=()=>del('remote');
 function showTransfer(name){
  $('transferOverlay').style.display='flex';$('transferFileName').textContent=name;
- $('transferPhase').textContent='Подготовка';$('transferPercent').textContent='0%';$('transferProgress').style.width='0%';
+ $('transferPhase').textContent='Подготовка';$('transferPercent').textContent='0%';$('transferProgress').classList.remove('indeterminate');$('transferProgress').style.width='0%';
  $('transferSpeed').textContent='0 Б/с';$('transferBytes').textContent='0 Б';$('transferError').textContent='';$('transferClose').disabled=true;
 }
 function hideTransfer(){$('transferOverlay').style.display='none'}
@@ -177,8 +177,8 @@ function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 async function watchTransfer(taskId){
  while(true){
   const t=await api('/api/transfer/status/'+taskId);
-  const percent=Math.max(0,Math.min(100,Number(t.percent)||0));
-  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=percent+'%';$('transferProgress').style.width=percent+'%';
+  const known=t.percent!==null&&t.percent!==undefined;const percent=known?Math.max(0,Math.min(100,Number(t.percent)||0)):0;
+  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=known?percent+'%':'—';$('transferProgress').classList.toggle('indeterminate',!known);$('transferProgress').style.width=known?percent+'%':'35%';
   $('transferSpeed').textContent=(t.speed ? fmt(t.speed) : '0 Б')+'/с';
   $('transferBytes').textContent=t.total_bytes?`${fmt(t.bytes_done||0)} / ${fmt(t.total_bytes)}`:fmt(t.bytes_done||0)+' передано';
   if(t.status==='completed'){$('transferClose').disabled=false;message('Копирование завершено');return}
@@ -204,10 +204,14 @@ async function transferFile(from,to){
   }else{
     if(fromLocal&&to==='remote'){
       if(!toSid)throw new Error('FTP не подключён');
-      await api(`/api/transfer/upload/${toSid}`,{method:'POST',body:JSON.stringify({local_path:fromPath,remote_path:toPath})});
+      showTransfer(src.name);message('Загрузка на FTP…');
+      const task=await api(`/api/transfer/upload/${toSid}`,{method:'POST',body:JSON.stringify({local_path:fromPath,remote_path:toPath})});
+      await watchTransfer(task.task_id);
     }else if(from==='remote'&&toLocal){
       if(!fromSid)throw new Error('FTP не подключён');
-      await api(`/api/transfer/download/${fromSid}`,{method:'POST',body:JSON.stringify({local_path:toPath,remote_path:fromPath})});
+      showTransfer(src.name);message('Скачивание с FTP…');
+      const task=await api(`/api/transfer/download/${fromSid}`,{method:'POST',body:JSON.stringify({local_path:toPath,remote_path:fromPath})});
+      await watchTransfer(task.task_id);
     }else throw new Error('Неподдерживаемое направление передачи');
   }
   await refresh(to);message('Передача завершена');

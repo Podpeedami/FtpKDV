@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import threading
+from collections import deque
 import time
 from pathlib import Path, PurePosixPath
 from ftplib import FTP, error_perm
@@ -253,37 +254,114 @@ def remote_delete(session_id: str, req: PathRequest):
         raise HTTPException(502, f"Не удалось удалить: {e}")
 
 
+def start_transfer_task(file_name: str, phase: str, worker):
+    task_id = str(uuid.uuid4())
+    transfer_tasks[task_id] = {
+        "id": task_id, "status": "queued", "percent": None,
+        "speed": 0, "bytes_done": 0, "total_bytes": 0,
+        "progress_known": False, "file": file_name,
+        "phase": "Подготовка", "error": None, "started_at": time.time(),
+    }
+
+    def run():
+        task = transfer_tasks[task_id]
+        task.update(status="running", phase=phase)
+        try:
+            worker(task)
+            task.update(status="completed", phase="Передача завершена",
+                        percent=100, speed=0, progress_known=True)
+        except Exception as e:
+            task.update(status="error", phase="Ошибка передачи",
+                        error=str(e), speed=0)
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"task_id": task_id}
+
+
 @app.post("/api/transfer/download/{session_id}")
 def download_remote(session_id: str, req: TransferRequest):
-    ftp = get_ftp(session_id)
     dest = local_path(req.local_path)
+    remote = PurePosixPath(req.remote_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with dest.open("wb") as f:
-            ftp.cwd(str(PurePosixPath(req.remote_path).parent))
-            ftp.retrbinary(f"RETR {PurePosixPath(req.remote_path).name}", f.write)
-        return {"ok": True, "path": str(dest.relative_to(WORKSPACE))}
-    except Exception as e:
-        try: dest.unlink(missing_ok=True)
-        except Exception: pass
-        raise HTTPException(502, f"Скачивание не удалось: {e}")
+
+    def worker(task):
+        ftp = get_ftp(session_id)
+        ftp.cwd(str(remote.parent))
+        try:
+            value = ftp.size(remote.name)
+            total = int(value) if value is not None and int(value) > 0 else 0
+        except Exception:
+            total = 0
+
+        task.update(total_bytes=total, progress_known=total > 0,
+                    percent=0 if total > 0 else None)
+        samples = deque()
+        done = 0
+
+        def on_download(block):
+            nonlocal done
+            with dest.open("ab") as stream:
+                stream.write(block)
+            done += len(block)
+            now = time.time()
+            samples.append((now, len(block)))
+            while len(samples) > 1 and now - samples[0][0] > 3:
+                samples.popleft()
+            elapsed = samples[-1][0] - samples[0][0]
+            speed = int(sum(x[1] for x in samples) / max(elapsed, 0.001))
+            task.update(bytes_done=done, speed=speed,
+                        percent=min(99, int(done * 100 / total)) if total else None)
+
+        try:
+            dest.write_bytes(b"")
+            ftp.retrbinary(f"RETR {remote.name}", on_download, blocksize=64 * 1024)
+            task.update(bytes_done=done, total_bytes=total or done,
+                        percent=100, progress_known=True, speed=0)
+        except Exception:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+
+    return start_transfer_task(remote.name, "Скачивание с FTP", worker)
 
 
 @app.post("/api/transfer/upload/{session_id}")
 def upload_local(session_id: str, req: TransferRequest):
-    ftp = get_ftp(session_id)
     src = local_path(req.local_path)
     if not src.is_file():
         raise HTTPException(400, "Выберите локальный файл")
-    try:
-        ftp.cwd(str(PurePosixPath(req.remote_path).parent))
-        with src.open("rb") as f:
-            ftp.storbinary(f"STOR {PurePosixPath(req.remote_path).name}", f)
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(502, f"Загрузка не удалась: {e}")
+    remote = PurePosixPath(req.remote_path)
+    total = src.stat().st_size
 
+    def worker(task):
+        ftp = get_ftp(session_id)
+        ftp.cwd(str(remote.parent))
+        task.update(total_bytes=total, progress_known=total > 0,
+                    percent=0 if total > 0 else None)
+        samples = deque()
+        done = 0
 
+        def on_upload(block):
+            nonlocal done
+            done += len(block)
+            now = time.time()
+            samples.append((now, len(block)))
+            while len(samples) > 1 and now - samples[0][0] > 3:
+                samples.popleft()
+            elapsed = samples[-1][0] - samples[0][0]
+            speed = int(sum(x[1] for x in samples) / max(elapsed, 0.001))
+            task.update(bytes_done=done, speed=speed,
+                        percent=min(99, int(done * 100 / total)) if total else None)
+
+        with src.open("rb") as stream:
+            ftp.storbinary(f"STOR {remote.name}", stream,
+                           blocksize=64 * 1024, callback=on_upload)
+        task.update(bytes_done=done, total_bytes=total,
+                    percent=100, progress_known=True, speed=0)
+
+    return start_transfer_task(src.name, "Загрузка на FTP", worker)
 
 class FTPCopyRequest(BaseModel):
     source_path: str
@@ -293,23 +371,22 @@ class FTPCopyRequest(BaseModel):
 
 @app.post("/api/transfer/ftp-copy/{source_session}")
 def ftp_copy(source_session: str, req: FTPCopyRequest):
-    # Run the transfer in a worker thread so the browser can poll progress.
     if source_session == req.destination_session:
-        raise HTTPException(400, "Источник и назначение должны быть разными FTP-соединениями")
+        raise HTTPException(400, "\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a \u0438 \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043e\u043b\u0436\u043d\u044b \u0431\u044b\u0442\u044c \u0440\u0430\u0437\u043d\u044b\u043c\u0438 FTP-\u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f\u043c\u0438")
     if source_session not in sessions or req.destination_session not in sessions:
-        raise HTTPException(401, "Подключите оба FTP-сервера заново")
+        raise HTTPException(401, "\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u043e\u0431\u0430 FTP-\u0441\u0435\u0440\u0432\u0435\u0440\u0430 \u0437\u0430\u043d\u043e\u0432\u043e")
 
     task_id = str(uuid.uuid4())
     transfer_tasks[task_id] = {
         "id": task_id, "status": "queued", "percent": 0,
         "speed": 0, "bytes_done": 0, "total_bytes": 0,
+        "progress_known": False,
         "file": PurePosixPath(req.source_path).name,
-        "phase": "Подготовка", "error": None, "started_at": time.time(),
+        "phase": "\u041f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u043a\u0430", "error": None, "started_at": time.time(),
     }
 
     def worker():
         task = transfer_tasks[task_id]
-        source = dest = None
         temp_path = None
         try:
             source = get_ftp(source_session)
@@ -318,45 +395,62 @@ def ftp_copy(source_session: str, req: FTPCopyRequest):
             dst_path = PurePosixPath(req.destination_path)
             source.cwd(str(src_path.parent))
             try:
-                total = int(source.size(src_path.name) or 0)
+                size = source.size(src_path.name)
+                total = int(size) if size is not None and int(size) > 0 else 0
             except Exception:
                 total = 0
-            task.update(status="running", phase="Скачивание с исходного FTP", total_bytes=total)
+            size_known = total > 0
+            task.update(status="running", phase="\u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 \u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u043e\u0433\u043e FTP",
+                        total_bytes=total * 2 if size_known else 0, progress_known=size_known)
             import tempfile
             fd, temp_path = tempfile.mkstemp(prefix="ftpkdv-transfer-")
             os.close(fd)
             downloaded = 0
-            phase_started = time.time()
+            samples = deque()
+
+            def update_speed(amount):
+                now = time.time()
+                samples.append((now, amount))
+                while len(samples) > 1 and now - samples[0][0] > 3:
+                    samples.popleft()
+                elapsed = samples[-1][0] - samples[0][0]
+                count = sum(item[1] for item in samples)
+                return int(count / max(elapsed, 0.001))
+
             with open(temp_path, "wb") as stream:
                 def on_download(chunk):
                     nonlocal downloaded
                     stream.write(chunk)
                     downloaded += len(chunk)
-                    elapsed = max(time.time() - phase_started, 0.001)
-                    task.update(bytes_done=downloaded, speed=int(downloaded / elapsed),
-                                percent=int(downloaded * 50 / total) if total else 0)
+                    task.update(bytes_done=downloaded, speed=update_speed(len(chunk)),
+                                percent=min(49, int(downloaded * 50 / total)) if size_known else None)
                 source.retrbinary(f"RETR {src_path.name}", on_download, blocksize=64 * 1024)
 
-            dest.cwd(str(dst_path.parent))
-            task.update(phase="Загрузка на целевой FTP", bytes_done=0, speed=0)
+            total = downloaded
+            task.update(phase="\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043d\u0430 \u0446\u0435\u043b\u0435\u0432\u043e\u0439 FTP",
+                        bytes_done=downloaded, total_bytes=total * 2,
+                        percent=50, progress_known=True, speed=0)
+            samples.clear()
             uploaded = 0
-            phase_started = time.time()
+            dest.cwd(str(dst_path.parent))
             with open(temp_path, "rb") as stream:
                 def on_upload(block):
                     nonlocal uploaded
                     uploaded += len(block)
-                    elapsed = max(time.time() - phase_started, 0.001)
-                    task.update(bytes_done=uploaded, speed=int(uploaded / elapsed),
+                    task.update(bytes_done=total + uploaded, speed=update_speed(len(block)),
                                 percent=50 + int(uploaded * 50 / total) if total else 50)
                 dest.storbinary(f"STOR {dst_path.name}", stream, blocksize=64 * 1024, callback=on_upload)
-            task.update(status="completed", phase="Копирование завершено", percent=100,
-                        speed=0, bytes_done=total, total_bytes=total)
+            task.update(status="completed", phase="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e",
+                        percent=100, speed=0, bytes_done=total * 2, total_bytes=total * 2,
+                        progress_known=True)
         except Exception as e:
-            task.update(status="error", phase="Ошибка копирования", error=str(e), speed=0)
+            task.update(status="error", phase="\u041e\u0448\u0438\u0431\u043a\u0430 \u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f", error=str(e), speed=0)
         finally:
             if temp_path:
-                try: os.unlink(temp_path)
-                except OSError: pass
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     threading.Thread(target=worker, daemon=True).start()
     return {"task_id": task_id}
