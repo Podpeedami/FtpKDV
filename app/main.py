@@ -305,10 +305,10 @@ def download_remote(session_id: str, req: TransferRequest):
             done += len(block)
             now = time.time()
             samples.append((now, len(block)))
-            while len(samples) > 1 and now - samples[0][0] > 3:
+            while len(samples) > 1 and now - samples[0][0] > 5:
                 samples.popleft()
             elapsed = samples[-1][0] - samples[0][0]
-            speed = int(sum(x[1] for x in samples) / max(elapsed, 0.001))
+            speed = int(sum(x[1] for x in samples) / max(elapsed, 1.0))
             task.update(bytes_done=done, speed=speed,
                         percent=min(99, int(done * 100 / total)) if total else None)
 
@@ -348,10 +348,10 @@ def upload_local(session_id: str, req: TransferRequest):
             done += len(block)
             now = time.time()
             samples.append((now, len(block)))
-            while len(samples) > 1 and now - samples[0][0] > 3:
+            while len(samples) > 1 and now - samples[0][0] > 5:
                 samples.popleft()
             elapsed = samples[-1][0] - samples[0][0]
-            speed = int(sum(x[1] for x in samples) / max(elapsed, 0.001))
+            speed = int(sum(x[1] for x in samples) / max(elapsed, 1.0))
             task.update(bytes_done=done, speed=speed,
                         percent=min(99, int(done * 100 / total)) if total else None)
 
@@ -411,11 +411,11 @@ def ftp_copy(source_session: str, req: FTPCopyRequest):
             def update_speed(amount):
                 now = time.time()
                 samples.append((now, amount))
-                while len(samples) > 1 and now - samples[0][0] > 3:
+                while len(samples) > 1 and now - samples[0][0] > 5:
                     samples.popleft()
                 elapsed = samples[-1][0] - samples[0][0]
                 count = sum(item[1] for item in samples)
-                return int(count / max(elapsed, 0.001))
+                return int(count / max(elapsed, 1.0))
 
             with open(temp_path, "wb") as stream:
                 def on_download(chunk):
