@@ -1,5 +1,6 @@
 services:
   ftpkdv:
+    image: ghcr.io/podpeedami/ftpkdv:latest
     build: .
     container_name: ftpkdv
     ports:
