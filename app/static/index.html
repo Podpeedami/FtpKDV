@@ -178,7 +178,7 @@ async function watchTransfer(taskId){
  while(true){
   const t=await api('/api/transfer/status/'+taskId);
   const known=t.percent!==null&&t.percent!==undefined;const percent=known?Math.max(0,Math.min(100,Number(t.percent)||0)):0;
-  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=known?percent+'%':'—';$('transferProgress').classList.toggle('indeterminate',!known);$('transferProgress').style.width=known?percent+'%':'35%';
+  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=known?percent+'%':(t.phase||'Скачивание')+': '+fmt(t.bytes_done||0);$('transferProgress').classList.toggle('indeterminate',!known);$('transferProgress').style.width=known?percent+'%':'35%';
   $('transferSpeed').textContent=(t.speed ? fmt(t.speed) : '0 Б')+'/с';
   $('transferBytes').textContent=t.total_bytes?`${fmt(t.bytes_done||0)} / ${fmt(t.total_bytes)}`:fmt(t.bytes_done||0)+' передано';
   if(t.status==='completed'){$('transferClose').disabled=false;message('Копирование завершено');return}
