@@ -353,7 +353,7 @@ def download_remote(session_id: str, req: TransferRequest):
                         speed=int(downloaded / elapsed),
                         percent=min(99, int(downloaded * 100 / total)) if total else 0,
                     )
-                ftp.retrbinary(f"RETR {remote.name}", on_download, blocksize=64 * 1024)
+                ftp.retrbinary(f"RETR {remote.name}", on_download, blocksize=1024 * 1024)
             task.update(status="completed", phase="Скачивание завершено", percent=100,
                         speed=0, bytes_done=downloaded, total_bytes=total or downloaded,
                         path=str(dest.relative_to(WORKSPACE)))
