@@ -247,26 +247,23 @@ async function transferFile(from,to){
   if(ftpToFtp){
     if(!fromSid||!toSid)throw new Error('Обе FTP-панели должны быть подключены');
     showTransfer(src.name);message('Копирование между FTP-серверами…');
-    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath,source_size:src.size||0})});
-    activeTransferId=task.task_id;
-    const result=await watchTransfer(task.task_id);
-    if(result!=='completed')return;
+    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath})});
+    await watchTransfer(task.task_id);
   }else{
     if(fromLocal&&to==='remote'){
       if(!toSid)throw new Error('FTP не подключён');
-      await api(`/api/transfer/upload/${toSid}`,{method:'POST',body:JSON.stringify({local_path:fromPath,remote_path:toPath})});
+      showTransfer(src.name);message('Загрузка на FTP…');
+      const task=await api(`/api/transfer/upload/${toSid}`,{method:'POST',body:JSON.stringify({local_path:fromPath,remote_path:toPath})});
+      await watchTransfer(task.task_id);
     }else if(from==='remote'&&toLocal){
       if(!fromSid)throw new Error('FTP не подключён');
-      await api(`/api/transfer/download/${fromSid}`,{method:'POST',body:JSON.stringify({local_path:toPath,remote_path:fromPath})});
+      showTransfer(src.name);message('Скачивание с FTP…');
+      const task=await api(`/api/transfer/download/${fromSid}`,{method:'POST',body:JSON.stringify({local_path:toPath,remote_path:fromPath})});
+      await watchTransfer(task.task_id);
     }else throw new Error('Неподдерживаемое направление передачи');
   }
   await refresh(to);message('Передача завершена');
- }catch(e){
-  message(e.message);
-  if($('transferOverlay').style.display==='flex'){
-   transferFinished=true;$('transferError').textContent=e.message;$('transferClose').disabled=false;$('transferCancel').disabled=true;
-  }
- }
+ }catch(e){message(e.message);if($('transferOverlay').style.display==='flex'){$('transferError').textContent=e.message;$('transferClose').disabled=false}}
 }
 $('downloadBtn').onclick=()=>transferFile('remote','local');
 $('uploadBtn').onclick=()=>transferFile('local','remote');
