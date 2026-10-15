@@ -367,6 +367,7 @@ class FTPCopyRequest(BaseModel):
     source_path: str
     destination_session: str
     destination_path: str
+    source_size: int = 0
 
 
 @app.post("/api/transfer/ftp-copy/{source_session}")
@@ -399,6 +400,8 @@ def ftp_copy(source_session: str, req: FTPCopyRequest):
                 total = int(size) if size is not None and int(size) > 0 else 0
             except Exception:
                 total = 0
+            if total <= 0:
+                total = max(0, int(req.source_size or 0))
             size_known = total > 0
             task.update(status="running", phase="\u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 \u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u043e\u0433\u043e FTP",
                         total_bytes=total * 2 if size_known else 0, progress_known=size_known)
@@ -424,7 +427,7 @@ def ftp_copy(source_session: str, req: FTPCopyRequest):
                     downloaded += len(chunk)
                     task.update(bytes_done=downloaded, speed=update_speed(len(chunk)),
                                 percent=min(49, int(downloaded * 50 / total)) if size_known else None)
-                source.retrbinary(f"RETR {src_path.name}", on_download, blocksize=64 * 1024)
+                source.retrbinary(f"RETR {src_path.name}", on_download, blocksize=1024 * 1024)
 
             total = downloaded
             task.update(phase="\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043d\u0430 \u0446\u0435\u043b\u0435\u0432\u043e\u0439 FTP",
@@ -439,7 +442,7 @@ def ftp_copy(source_session: str, req: FTPCopyRequest):
                     uploaded += len(block)
                     task.update(bytes_done=total + uploaded, speed=update_speed(len(block)),
                                 percent=50 + int(uploaded * 50 / total) if total else 50)
-                dest.storbinary(f"STOR {dst_path.name}", stream, blocksize=64 * 1024, callback=on_upload)
+                dest.storbinary(f"STOR {dst_path.name}", stream, blocksize=1024 * 1024, callback=on_upload)
             task.update(status="completed", phase="\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e",
                         percent=100, speed=0, bytes_done=total * 2, total_bytes=total * 2,
                         progress_known=True)

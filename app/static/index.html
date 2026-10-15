@@ -199,7 +199,7 @@ async function transferFile(from,to){
   if(ftpToFtp){
     if(!fromSid||!toSid)throw new Error('Обе FTP-панели должны быть подключены');
     showTransfer(src.name);message('Копирование между FTP-серверами…');
-    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath})});
+    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath,source_size:src.size||0})});
     await watchTransfer(task.task_id);
   }else{
     if(fromLocal&&to==='remote'){
