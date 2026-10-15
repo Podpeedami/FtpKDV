@@ -76,6 +76,7 @@ class RenameRequest(BaseModel):
 class TransferRequest(BaseModel):
     local_path: str
     remote_path: str
+    source_size: int = Field(default=0, ge=0)
 
 
 def local_path(user_path: str) -> Path:
@@ -336,7 +337,7 @@ def download_remote(session_id: str, req: TransferRequest):
             ftp = get_ftp(session_id)
             ftp.cwd(str(remote.parent))
             try:
-                total = int(ftp.size(remote.name) or 0)
+                total = int(ftp.size(remote.name) or 0) or int(req.source_size or 0)
             except Exception:
                 total = 0
             task.update(status="running", phase="Скачивание с FTP", total_bytes=total)
@@ -353,7 +354,7 @@ def download_remote(session_id: str, req: TransferRequest):
                         speed=int(downloaded / elapsed),
                         percent=min(99, int(downloaded * 100 / total)) if total else 0,
                     )
-                ftp.retrbinary(f"RETR {remote.name}", on_download, blocksize=1024 * 1024)
+                ftp.retrbinary(f"RETR {remote.name}", on_download, blocksize=4 * 1024 * 1024)
             task.update(status="completed", phase="Скачивание завершено", percent=100,
                         speed=0, bytes_done=downloaded, total_bytes=total or downloaded,
                         path=str(dest.relative_to(WORKSPACE)))

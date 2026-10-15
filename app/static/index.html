@@ -33,7 +33,7 @@ tr{cursor:pointer}tbody tr:hover{background:#233344}tr.selected{background:#183d
 .transfer-dialog{width:min(520px,100%);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 20px 70px #0008}
 .transfer-dialog h2{font-size:18px;margin:0 0 8px}.transfer-meta{display:flex;justify-content:space-between;gap:12px;margin:12px 0;color:var(--muted);font-size:13px}
 .progress-track{height:14px;background:#0b1118;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-.progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease}.transfer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease}.progress-fill.indeterminate{width:35%;animation:transfer-sweep 1.2s ease-in-out infinite alternate}@keyframes transfer-sweep{from{transform:translateX(0)}to{transform:translateX(185%)}}.transfer-actions{display:flex;justify-content:flex-end;margin-top:14px}
 @media(max-width:850px){.panes{grid-template-columns:1fr}.table-wrap{max-height:55vh}.connect{align-items:stretch}.field{flex:1}#host,#username,#password{width:100%}}
 </style>
 </head>
@@ -42,12 +42,11 @@ tr{cursor:pointer}tbody tr:hover{background:#233344}tr.selected{background:#183d
 <main>
 <section class="connect">
  <div class="field"><label>Подключить FTP к панели</label><select id="connectTarget"><option value="right">Правой панели</option><option value="left">Левой панели</option></select></div>
- <div class="field"><label>Сохранённые соединения</label><select id="savedConnections" style="min-width:180px"><option value="">Выбрать профиль…</option></select></div>
  <div class="field"><label>FTP-сервер</label><input id="host" placeholder="ftp.example.com"></div>
  <div class="field"><label>Порт</label><input id="port" type="number" value="21" style="width:80px"></div>
  <div class="field"><label>Логин</label><input id="username" value="anonymous"></div>
  <div class="field"><label>Пароль</label><input id="password" type="password" placeholder="Пароль"></div>
- <button class="primary" id="connectBtn">Подключиться</button><button id="saveConnectionBtn">Сохранить профиль</button><button id="deleteConnectionBtn">Удалить профиль</button><button id="disconnectBtn">Отключиться</button>
+ <button class="primary" id="connectBtn">Подключиться</button><button id="disconnectBtn">Отключиться</button>
 </section>
 <section class="panes">
  <div class="pane">
@@ -76,7 +75,7 @@ tr{cursor:pointer}tbody tr:hover{background:#233344}tr.selected{background:#183d
   <div class="progress-track"><div class="progress-fill" id="transferProgress"></div></div>
   <div class="transfer-meta"><span>Скорость: <strong id="transferSpeed">0 Б/с</strong></span><span id="transferBytes">0 Б</span></div>
   <div id="transferError" class="status" style="padding-left:0;color:var(--danger)"></div>
-  <div class="transfer-actions"><button class="danger" id="transferCancel">Отменить копирование</button><button id="transferClose">Закрыть</button></div>
+  <div class="transfer-actions"><button id="transferClose" disabled>Закрыть</button></div>
  </div>
 </div>
 <script>
@@ -118,33 +117,6 @@ async function refresh(which){
   } else {if(!rightSid)throw new Error('Подключите FTP к правой панели');render('remote',await api(`/api/ftp/${rightSid}/list?path=`+encodeURIComponent($('remotePath').value)))}
  }catch(e){message(e.message);$(which+'Status').textContent=e.message}
 }
-async function loadSavedConnections(selectName=''){
- try{
-  const profiles=await api('/api/ftp/saved');const select=$('savedConnections');
-  select.innerHTML='<option value="">Выбрать профиль…</option>';
-  for(const p of profiles){const o=document.createElement('option');o.value=p.name;o.textContent=p.name+' — '+p.host+':'+p.port;select.append(o)}
-  if(selectName)select.value=selectName;
- }catch(e){message('Не удалось загрузить сохранённые соединения: '+e.message)}
-}
-$('savedConnections').onchange=async()=>{
- const name=$('savedConnections').value;if(!name)return;
- try{const profiles=await api('/api/ftp/saved');const p=profiles.find(x=>x.name===name);if(!p)return;
-  $('host').value=p.host;$('port').value=p.port;$('username').value=p.username||'anonymous';$('password').value=p.password||'';
-  message('Профиль загружен. Можно подключаться.');
- }catch(e){message(e.message)}
-};
-$('saveConnectionBtn').onclick=async()=>{
- try{const name=prompt('Имя сохранённого соединения:');if(!name||!name.trim())return;
-  await api('/api/ftp/saved',{method:'POST',body:JSON.stringify({name:name.trim(),host:$('host').value.trim(),port:Number($('port').value)||21,username:$('username').value,password:$('password').value,passive:true})});
-  await loadSavedConnections(name.trim());message('Профиль сохранён.');
- }catch(e){message(e.message)}
-};
-$('deleteConnectionBtn').onclick=async()=>{
- const name=$('savedConnections').value;if(!name){message('Выберите сохранённый профиль');return}
- if(!confirm('Удалить сохранённый профиль «'+name+'»?'))return;
- try{await api('/api/ftp/saved/'+encodeURIComponent(name),{method:'DELETE'});await loadSavedConnections();message('Профиль удалён.')}catch(e){message(e.message)}
-};
-loadSavedConnections();
 $('connectBtn').onclick=async()=>{
  try{
   const target=$('connectTarget').value;
@@ -194,43 +166,24 @@ async function del(which){
 $('localMkdir').onclick=()=>mkdir('local');$('remoteMkdir').onclick=()=>mkdir('remote');
 $('localRename').onclick=()=>rename('local');$('remoteRename').onclick=()=>rename('remote');
 $('localDelete').onclick=()=>del('local');$('remoteDelete').onclick=()=>del('remote');
-let activeTransferId=null, transferFinished=true;
 function showTransfer(name){
  $('transferOverlay').style.display='flex';$('transferFileName').textContent=name;
- $('transferPhase').textContent='Подготовка';$('transferPercent').textContent='0%';$('transferProgress').style.width='0%';
- $('transferSpeed').textContent='0 Б/с';$('transferBytes').textContent='0 Б';$('transferError').textContent='';
- $('transferClose').disabled=false;$('transferCancel').disabled=false;
- transferFinished=false;activeTransferId=null;
+ $('transferPhase').textContent='Подготовка';$('transferPercent').textContent='0%';$('transferProgress').classList.remove('indeterminate');$('transferProgress').style.width='0%';
+ $('transferSpeed').textContent='0 Б/с';$('transferBytes').textContent='0 Б';$('transferError').textContent='';$('transferClose').disabled=true;
 }
 function hideTransfer(){$('transferOverlay').style.display='none'}
-$('transferClose').onclick=()=>hideTransfer();
-$('transferCancel').onclick=async()=>{
- if(!activeTransferId||transferFinished)return;
- $('transferCancel').disabled=true;$('transferPhase').textContent='Отмена копирования…';
- try{await api('/api/transfer/cancel/'+activeTransferId,{method:'POST',body:'{}'});}
- catch(e){$('transferError').textContent=e.message;$('transferCancel').disabled=false}
-};
+$('transferClose').onclick=hideTransfer;
 function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 async function watchTransfer(taskId){
- activeTransferId=taskId;
  while(true){
   const t=await api('/api/transfer/status/'+taskId);
-  const percent=Math.max(0,Math.min(100,Number(t.percent)||0));
-  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=percent+'%';$('transferProgress').style.width=percent+'%';
+  const known=t.percent!==null&&t.percent!==undefined;const percent=known?Math.max(0,Math.min(100,Number(t.percent)||0)):0;
+  $('transferPhase').textContent=t.phase||'Копирование';$('transferPercent').textContent=known?percent+'%':(t.phase||'Скачивание')+': '+fmt(t.bytes_done||0);
+  $('transferProgress').classList.toggle('indeterminate',!known);$('transferProgress').style.width=known?percent+'%':'35%';
   $('transferSpeed').textContent=(t.speed ? fmt(t.speed) : '0 Б')+'/с';
   $('transferBytes').textContent=t.total_bytes?`${fmt(t.bytes_done||0)} / ${fmt(t.total_bytes)}`:fmt(t.bytes_done||0)+' передано';
-  if(t.status==='completed'){
-   transferFinished=true;$('transferCancel').disabled=true;$('transferClose').disabled=false;
-   message('Копирование завершено');return 'completed';
-  }
-  if(t.status==='cancelled'){
-   transferFinished=true;$('transferCancel').disabled=true;$('transferClose').disabled=false;
-   $('transferPhase').textContent='Копирование отменено';message('Копирование отменено');return 'cancelled';
-  }
-  if(t.status==='error'){
-   transferFinished=true;$('transferCancel').disabled=true;$('transferClose').disabled=false;
-   $('transferError').textContent=t.error||'Неизвестная ошибка';message(t.error||'Ошибка копирования');return 'error';
-  }
+  if(t.status==='completed'){$('transferClose').disabled=false;message('Копирование завершено');return}
+  if(t.status==='error'){$('transferError').textContent=t.error||'Неизвестная ошибка';$('transferClose').disabled=false;throw new Error(t.error||'Ошибка копирования')}
   await wait(500);
  }
 }
@@ -247,7 +200,7 @@ async function transferFile(from,to){
   if(ftpToFtp){
     if(!fromSid||!toSid)throw new Error('Обе FTP-панели должны быть подключены');
     showTransfer(src.name);message('Копирование между FTP-серверами…');
-    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath})});
+    const task=await api(`/api/transfer/ftp-copy/${fromSid}`,{method:'POST',body:JSON.stringify({source_path:fromPath,destination_session:toSid,destination_path:toPath,source_size:src.size||0})});
     await watchTransfer(task.task_id);
   }else{
     if(fromLocal&&to==='remote'){
