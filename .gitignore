@@ -1,0 +1,15 @@
+﻿__pycache__/
+*.py[cod]
+*.bak
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+
+# Рабочие файлы FTP-клиента не загружаем
+workspace/*
+!workspace/.gitkeep

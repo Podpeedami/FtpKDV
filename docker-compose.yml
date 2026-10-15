@@ -1,0 +1,11 @@
+services:
+  ftpkdv:
+    build: .
+    container_name: ftpkdv
+    ports:
+      - "8010:8080"
+    environment:
+      WORKSPACE_DIR: /workspace
+    volumes:
+      - ./workspace:/workspace
+    restart: unless-stopped
